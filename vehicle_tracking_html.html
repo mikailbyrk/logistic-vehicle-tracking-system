@@ -1,0 +1,141 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+    <meta charset="UTF-8">
+    <title>Çoklu Araç Takip Paneli</title>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <style>
+        body { margin: 0; font-family: 'Segoe UI', sans-serif; }
+        #map { height: 100vh; width: 100%; }
+        .sidebar {
+            position: absolute; top: 10px; right: 10px; z-index: 1000;
+            background: rgba(255, 255, 255, 0.95); width: 300px;
+            border-radius: 8px; box-shadow: 0 4px 15px rgba(0,0,0,0.2);
+            padding: 15px; max-height: 90vh; overflow-y: auto;
+        }
+        .arac-kart {
+            border: 1px solid #ddd; border-radius: 5px; padding: 10px;
+            margin-bottom: 10px; border-left: 5px solid #3388ff;
+        }
+        h3 { margin-top: 0; color: #333; }
+        button {
+            width: 100%; padding: 12px; background: #28a745; color: white;
+            border: none; border-radius: 5px; font-size: 16px; cursor: pointer;
+        }
+        button:hover { background: #218838; }
+    </style>
+</head>
+<body>
+
+    <div class="sidebar">
+        <h3>Lojistik Filo Takip</h3>
+        <button onclick="sistemiBaslat()">CANLI İZLEMEYİ BAŞLAT</button>
+        <div id="aracListesi" style="margin-top:20px;">
+            <p style="color:#666; font-size:14px;">Veri bekleniyor...</p>
+        </div>
+    </div>
+
+    <div id="map"></div>
+
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script>
+        // Harita Başlangıcı (Türkiye geneli bakış)
+        var map = L.map('map').setView([39.9, 32.8], 6);
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png').addTo(map);
+
+        var araclar = {}; // Her aracın marker ve rota verisini tutacak obje
+        var renkler = ['red', 'blue', 'green', 'orange', 'purple']; // Farklı araçlar için renkler
+
+        async function sistemiBaslat() {
+            document.getElementById('aracListesi').innerHTML = "Veriler yükleniyor...";
+
+            try {
+                // PORT 5055'ten veriyi çek
+                const response = await fetch('http://127.0.0.1:5055/api/tum-araclar');
+                if (!response.ok) throw new Error("Sunucuya bağlanılamadı!");
+                
+                const tumVeriler = await response.json();
+                
+                // 1. Veriyi Plakalara Göre Grupla
+                const gruplanmisVeri = {};
+                tumVeriler.forEach(veri => {
+                    if (!gruplanmisVeri[veri.plaka]) {
+                        gruplanmisVeri[veri.plaka] = [];
+                    }
+                    gruplanmisVeri[veri.plaka].push(veri);
+                });
+
+                // 2. Haritayı Temizle ve Yeni Araçları Ekle
+                map.eachLayer(layer => {
+                    if (layer instanceof L.Marker || layer instanceof L.Polyline) map.removeLayer(layer);
+                });
+                
+                const aracListesiDiv = document.getElementById('aracListesi');
+                aracListesiDiv.innerHTML = "";
+                
+                let renkIndex = 0;
+                let tumNoktalar = []; // Haritayı sığdırmak için
+
+                // Her bir araç için döngü
+                Object.keys(gruplanmisVeri).forEach(plaka => {
+                    const rotaVerisi = gruplanmisVeri[plaka];
+                    const aracRenk = renkler[renkIndex % renkler.length];
+                    renkIndex++;
+
+                    // A) Rotayı Çiz
+                    const koordinatlar = rotaVerisi.map(v => [v.enlem, v.boylam]);
+                    tumNoktalar = tumNoktalar.concat(koordinatlar);
+                    
+                    L.polyline(koordinatlar, { color: aracRenk, weight: 4, opacity: 0.7 }).addTo(map);
+
+                    // B) Marker Oluştur (Başlangıç noktasına)
+                    const marker = L.marker(koordinatlar[0]).addTo(map);
+                    marker.bindPopup(`<b>${plaka}</b>`);
+
+                    // C) HTML Paneline Bilgi Kartı Ekle
+                    const kartId = `kart-${plaka.replace(/\s/g, '')}`;
+                    aracListesiDiv.innerHTML += `
+                        <div class="arac-kart" style="border-left-color: ${aracRenk}">
+                            <strong>${plaka}</strong><br>
+                            <span id="${kartId}">Hazırlanıyor...</span>
+                        </div>
+                    `;
+
+                    // D) Animasyon Başlat (Her araç için ayrı zamanlayıcı)
+                    animasyonBaslat(marker, rotaVerisi, kartId);
+                });
+
+                // Haritayı tüm araçları görecek şekilde ayarla
+                if(tumNoktalar.length > 0) map.fitBounds(L.polyline(tumNoktalar).getBounds());
+
+            } catch (err) {
+                alert("Hata: " + err.message);
+            }
+        }
+
+        function animasyonBaslat(marker, veriDizisi, bilgiElementId) {
+            let i = 0;
+            function adim() {
+                if (i >= veriDizisi.length) return; // Rota bitti
+
+                const veri = veriDizisi[i];
+                marker.setLatLng([veri.enlem, veri.boylam]); // Konumu güncelle
+                
+                // Bilgi panelini güncelle
+                const bilgiKutusu = document.getElementById(bilgiElementId);
+                if(bilgiKutusu) {
+                    bilgiKutusu.innerHTML = `
+                        Hız: ${veri.hiz} km/s <br>
+                        Saat: ${veri.zaman} <br>
+                        Konum: ${veri.enlem.toFixed(4)}, ${veri.boylam.toFixed(4)}
+                    `;
+                }
+
+                i++;
+                setTimeout(adim, 1000); // 1 saniyede bir sonraki veriye geç
+            }
+            adim();
+        }
+    </script>
+</body>
+</html>
